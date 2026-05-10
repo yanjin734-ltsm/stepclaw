@@ -1,33 +1,9 @@
 import express from 'express';
-import { StepChatClient } from './stepchat-client';
+import { StepClawClient } from './stepclaw-client';
 import { OpenAIHandler } from './openai-handler';
 import { logger } from './logger';
 
 function loadConfig() {
-  const tokensRaw = process.env.STEP_TOKENS || '';
-  const tokens = tokensRaw.split(',').map(t => t.trim()).filter(t => t.length > 0);
-
-  if (tokens.length === 0) {
-    console.error('[ERROR] STEP_TOKENS environment variable is required.');
-    console.error('');
-    console.error('How to get your token:');
-    console.error('  1. Open https://stepchat.cn and log in');
-    console.error('  2. Open DevTools (F12) -> Application -> Cookies');
-    console.error('  3. Copy the value of the "token" cookie');
-    console.error('  4. Set STEP_TOKENS=your_token_value');
-    console.error('  5. For multiple tokens: STEP_TOKENS=token1,token2,token3');
-    console.error('');
-    process.exit(1);
-  }
-
-  return {
-    port: parseInt(process.env.PORT || '8080', 10),
-    baseUrl: process.env.STEP_BASE_URL || 'https://stepchat.cn',
-    tokens,
-  };
-}
-
-function main() {
   // Load .env file if present
   try {
     const fs = require('fs');
@@ -53,17 +29,41 @@ function main() {
     // .env loading is optional
   }
 
+  // Auto-detect StepClaw local proxy settings
+  const baseUrl = process.env.STEPCLAW_BASE_URL || 'http://127.0.0.1:3199/v1';
+  const apiKey = process.env.STEPCLAW_API_KEY || 'stepfun-model-proxy';
+  const defaultModel = process.env.STEPCLAW_DEFAULT_MODEL || 'step-alpha';
+  const port = parseInt(process.env.PORT || '8080', 10);
+
+  return { baseUrl, apiKey, defaultModel, port };
+}
+
+async function main() {
   const config = loadConfig();
 
-  logger.info(`Starting stepclaw-opencode-proxy v1.0.0`);
-  logger.info(`Tokens loaded: ${config.tokens.length}`);
-  logger.info(`Target: ${config.baseUrl}`);
+  logger.info(`Starting stepclaw-opencode-proxy v2.0.0`);
+  logger.info(`StepClaw local proxy: ${config.baseUrl}`);
+  logger.info(`Default model: ${config.defaultModel}`);
 
-  // Initialize client and handler
-  const client = new StepChatClient({
+  // Initialize client
+  const client = new StepClawClient({
     baseUrl: config.baseUrl,
-    tokens: config.tokens,
+    apiKey: config.apiKey,
+    defaultModel: config.defaultModel,
   });
+
+  // Health check - verify StepClaw desktop app is running
+  logger.info('Checking StepClaw desktop app connectivity...');
+  const healthy = await client.healthCheck();
+  if (!healthy) {
+    logger.warn('');
+    logger.warn('⚠ Cannot reach StepClaw local proxy at ' + config.baseUrl);
+    logger.warn('  Make sure the 阶跃AI桌面伙伴 (StepFun desktop app) is running.');
+    logger.warn('  The proxy will start anyway and retry on each request.');
+    logger.warn('');
+  } else {
+    logger.info('StepClaw local proxy is reachable. Connection OK.');
+  }
 
   const handler = new OpenAIHandler(client);
 
@@ -76,7 +76,8 @@ function main() {
     res.json({
       status: 'ok',
       service: 'stepclaw-opencode-proxy',
-      version: '1.0.0',
+      version: '2.0.0',
+      upstream: config.baseUrl,
       endpoints: {
         models: '/v1/models',
         chat: '/v1/chat/completions',
@@ -91,7 +92,17 @@ function main() {
   // Start server
   app.listen(config.port, '127.0.0.1', () => {
     logger.info(`Proxy server listening on http://127.0.0.1:${config.port}`);
-    logger.info(`OpenCode config: baseUrl = "http://127.0.0.1:${config.port}/v1"`);
+    logger.info('');
+    logger.info('=== OpenCode Configuration ===');
+    logger.info('Add this to ~/.config/opencode/opencode.json:');
+    logger.info('');
+    logger.info(`  "providers": {`);
+    logger.info(`    "stepclaw": {`);
+    logger.info(`      "baseUrl": "http://127.0.0.1:${config.port}/v1",`);
+    logger.info(`      "api": "openai-completions",`);
+    logger.info(`      "apiKey": "not-needed"`);
+    logger.info(`    }`);
+    logger.info(`  }`);
     logger.info('');
     logger.info('Ready to accept requests.');
   });

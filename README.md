@@ -1,55 +1,34 @@
 # stepclaw-opencode-proxy
 
-将 StepClaw（stepchat.cn）的免费额度转换为 OpenAI 兼容 API，供 OpenCode 使用。
+将阶跃AI桌面伙伴（StepClaw）的本地免费额度转发给 OpenCode 使用。
 
 ## 原理
 
 ```
-OpenCode  ──→  本地代理 (localhost:8080)  ──→  stepchat.cn 内部 API
-         OpenAI 格式                        Session Cookie 认证
+OpenCode  ──→  本地代理 (localhost:8080)  ──→  StepClaw 桌面端本地代理 (localhost:3199)
+         OpenAI 兼容格式                      OpenAI 兼容格式（已内置认证）
 ```
 
-本项目逆向 stepchat.cn 网页端的对话接口，将其包装为标准的 OpenAI `/v1/chat/completions` 格式，使 OpenCode 可以直接调用 StepClaw 的免费 token 额度。
+**关键发现**：阶跃AI桌面伙伴在本地 `127.0.0.1:3199` 暴露了一个标准的 OpenAI 兼容 API，使用固定 API Key `stepfun-model-proxy`。它内部处理了与阶跃云端的认证，我们只需要把 OpenCode 的请求转发过去即可。
+
+## 前置条件
+
+- 安装并运行 **阶跃AI桌面伙伴**（StepFun Desktop）
+- 确保 StepClaw 已激活（有免费额度）
 
 ## 快速开始
 
-### 1. 获取 Token
-
-1. 打开 https://stepchat.cn 并登录
-2. 按 F12 打开 DevTools → Application → Cookies
-3. 找到 `token` 字段，复制其值
-
-### 2. 安装依赖
+### 1. 安装依赖
 
 ```bash
 cd stepclaw_opencode
 npm install
 ```
 
-### 3. 配置
-
-复制 `.env.example` 为 `.env`，填入你的 token：
+### 2. 启动代理
 
 ```bash
-cp .env.example .env
-```
-
-编辑 `.env`：
-
-```
-STEP_TOKENS=你的token值
-```
-
-支持多个 token 轮换（逗号分隔）：
-
-```
-STEP_TOKENS=token1,token2,token3
-```
-
-### 4. 启动
-
-```bash
-# 开发模式
+# 开发模式（无需编译）
 npm run dev
 
 # 或编译后运行
@@ -57,9 +36,9 @@ npm run build
 npm start
 ```
 
-服务启动后监听 `http://127.0.0.1:8080`。
+启动后会自动检测阶跃AI桌面端是否在运行。
 
-### 5. 配置 OpenCode
+### 3. 配置 OpenCode
 
 编辑 `~/.config/opencode/opencode.json`：
 
@@ -75,12 +54,12 @@ npm start
         "models": [
           {
             "id": "step-3.5-flash",
-            "name": "Step 3.5 Flash (Free)",
+            "name": "Step 3.5 Flash (StepClaw Free)",
             "reasoning": true,
-            "input": ["text"],
+            "input": ["text", "image"],
             "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
-            "contextWindow": 262144,
-            "maxTokens": 65536
+            "contextWindow": 128000,
+            "maxTokens": 32000
           }
         ]
       }
@@ -89,72 +68,99 @@ npm start
 }
 ```
 
-### 6. 验证
+### 4. 验证
 
 ```bash
+# 测试非流式
 curl http://127.0.0.1:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{
-    "model": "step-3.5-flash",
-    "messages": [{"role": "user", "content": "你好"}],
-    "stream": true
-  }'
+  -d '{"model":"step-3.5-flash","messages":[{"role":"user","content":"你好"}]}'
+
+# 测试流式
+curl http://127.0.0.1:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"step-3.5-flash","messages":[{"role":"user","content":"你好"}],"stream":true}'
 ```
 
-## 抓包指南
+## 无需代理的直连方案
 
-如果 stepchat.cn 更新了接口，你需要重新抓包分析。步骤：
+如果你不需要模型名映射，可以跳过本代理，直接让 OpenCode 连接 StepClaw 本地端口：
 
-### 网页端抓包（推荐）
+```json
+{
+  "models": {
+    "mode": "merge",
+    "providers": {
+      "stepclaw": {
+        "baseUrl": "http://127.0.0.1:3199/v1",
+        "api": "openai-completions",
+        "apiKey": "stepfun-model-proxy",
+        "models": [
+          {
+            "id": "step-alpha",
+            "name": "StepClaw Alpha (Free)",
+            "reasoning": true,
+            "input": ["text", "image"],
+            "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+            "contextWindow": 128000,
+            "maxTokens": 32000
+          }
+        ]
+      }
+    }
+  }
+}
+```
 
-1. 打开 https://stepchat.cn，登录
-2. F12 → Network 面板，勾选 "Preserve log"
-3. 发送一条消息
-4. 在 Network 中找到关键请求：
-   - `POST /api/chat/create` — 创建会话
-   - `POST /api/chat/completion` — 发送消息（SSE 流式）
-   - `POST /api/chat/delete` — 删除会话
-5. 查看 Request Headers 中的认证字段（Cookie 中的 token）
-6. 查看 Request Body 和 Response 格式
+## 技术细节
 
-### APP 端抓包
+### StepClaw 桌面端本地架构
 
-如果需要抓 APP 的包：
+| 组件 | 端口 | 用途 |
+|------|------|------|
+| Model Proxy | 3199 | OpenAI 兼容 API，转发模型请求到阶跃云端 |
+| OpenClaw Gateway | 30999 | OpenClaw 控制面板和 Agent 管理 |
+| Event Bridge | 31091 | 内部事件通信 |
+| DevTools | 9224 | Electron 调试端口 |
 
-1. 安装 mitmproxy：`pip install mitmproxy`
-2. 启动：`mitmweb --listen-port 8888`
-3. 手机设置代理为电脑 IP:8888
-4. 安装 mitmproxy CA 证书
-5. 打开阶跃 AI APP，操作 StepClaw
-6. 在 mitmweb 界面分析请求
+### 配置文件位置
 
-## 注意事项
+- StepClaw 数据目录：`D:\StepClaw\data\`（由 `~/.stepclaw/stepclaw-install-state.json` 指定）
+- OpenClaw 配置：`D:\StepClaw\data\openclaw.json`
+- Gateway Token：`~/.stepclaw/runtime/gateway-auth-token`
 
-- ⚠️ 逆向 API 不稳定，阶跃可能随时更改接口
-- ⚠️ 有封号风险，建议使用小号
-- ⚠️ 免费额度有限（5000 万 token），用完即止
-- ⚠️ Session token 有有效期，过期需重新获取
-- 仅供学习研究使用，请遵守相关服务条款
+### 可用模型
+
+| 模型 ID | 说明 |
+|---------|------|
+| `step-alpha` | 主力编程模型（Step 3.5 Flash 的内部代号） |
+| `vision-model` | 图像理解模型 |
+
+## 环境变量
+
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
+| `STEPCLAW_BASE_URL` | StepClaw 本地代理地址 | `http://127.0.0.1:3199/v1` |
+| `STEPCLAW_API_KEY` | 本地代理 API Key | `stepfun-model-proxy` |
+| `STEPCLAW_DEFAULT_MODEL` | 默认模型 | `step-alpha` |
+| `PORT` | 本代理监听端口 | `8080` |
+| `LOG_LEVEL` | 日志级别 | `info` |
 
 ## 项目结构
 
 ```
 src/
 ├── index.ts            # 入口，Express 服务器
-├── stepchat-client.ts  # StepChat 内部 API 客户端
-├── openai-handler.ts   # OpenAI 兼容格式转换
-├── token-manager.ts    # 多 token 轮换管理
+├── stepclaw-client.ts  # StepClaw 本地代理客户端
+├── openai-handler.ts   # 请求处理和转发
 └── logger.ts           # 日志工具
 ```
 
-## 环境变量
+## 注意事项
 
-| 变量 | 说明 | 默认值 |
-|------|------|--------|
-| `STEP_TOKENS` | stepchat.cn 的 session token，多个用逗号分隔 | 必填 |
-| `PORT` | 代理服务端口 | 8080 |
-| `STEP_BASE_URL` | stepchat.cn 地址 | https://stepchat.cn |
-| `LOG_LEVEL` | 日志级别：debug/info/warn/error | info |
+- 必须保持阶跃AI桌面伙伴在后台运行
+- 免费额度有限，用完即止
+- 本地代理仅监听 127.0.0.1，不会暴露到网络
 
 ## License
 

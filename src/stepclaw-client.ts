@@ -1,4 +1,5 @@
 import { logger } from './logger';
+import { UpstreamConfig } from './types';
 
 export interface StepClawProxyConfig {
   /** Local proxy URL exposed by StepClaw desktop app */
@@ -43,7 +44,7 @@ export class StepClawClient {
   async chatCompletions(
     body: any,
     stream: boolean
-  ): Promise<{ status: number; headers: Record<string, string>; body: NodeJS.ReadableStream | any }> {
+  ): Promise<{ status: number; headers: Record<string, string>; body: NodeJS.ReadableStream | any } & { upstreamName?: string }> {
     const fetch = (await import('node-fetch')).default;
     const url = `${this.config.baseUrl}/chat/completions`;
 
@@ -72,7 +73,11 @@ export class StepClawClient {
 
     if (!response.ok) {
       const errorText = await response.text();
-      throw new Error(`StepClaw proxy error: ${response.status} - ${errorText}`);
+      throw new StepClawError(
+        `StepClaw proxy error: ${response.status} - ${errorText}`,
+        response.status,
+        errorText
+      );
     }
 
     if (stream) {
@@ -130,5 +135,17 @@ export class StepClawClient {
     } catch {
       return false;
     }
+  }
+}
+
+export class StepClawError extends Error {
+  statusCode: number;
+  responseBody: string;
+
+  constructor(message: string, statusCode: number, responseBody: string) {
+    super(message);
+    this.name = 'StepClawError';
+    this.statusCode = statusCode;
+    this.responseBody = responseBody;
   }
 }

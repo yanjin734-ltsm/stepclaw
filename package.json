@@ -1,6 +1,6 @@
 {
   "name": "stepclaw-opencode-proxy",
-  "version": "1.0.0",
+  "version": "3.0.0",
   "description": "Proxy server that converts StepClaw (stepchat.cn) free quota into OpenAI-compatible API for OpenCode",
   "main": "dist/index.js",
   "scripts": {

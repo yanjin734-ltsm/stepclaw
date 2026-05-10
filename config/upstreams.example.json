@@ -1,0 +1,35 @@
+{
+  "upstreams": [
+    {
+      "name": "vm-a",
+      "baseUrl": "http://127.0.0.1:3199/v1",
+      "apiKey": "stepfun-model-proxy",
+      "weight": 1
+    },
+    {
+      "name": "vm-b",
+      "baseUrl": "http://127.0.0.1:3200/v1",
+      "apiKey": "stepfun-model-proxy",
+      "weight": 1
+    }
+  ],
+  "routing": {
+    "strategy": "rendezvous-hash",
+    "sessionTtlSeconds": 86400
+  },
+  "retries": {
+    "maxRetries": 2,
+    "twoFailuresWindowSeconds": 60,
+    "twoFailuresToMigrate": 2
+  },
+  "cooldowns": {
+    "rateLimitSeconds": 1800,
+    "transportErrorSeconds": 300,
+    "serverErrorSeconds": 300
+  },
+  "healthCheck": {
+    "enabled": true,
+    "intervalSeconds": 15,
+    "consecutiveFailures": 3
+  }
+}

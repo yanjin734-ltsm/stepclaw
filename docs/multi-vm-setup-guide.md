@@ -1,10 +1,28 @@
-# StepClaw 多账号多开实操指南
+# StepClaw 多账号多开实操指南（修订版）
+
+> **重要更新**：根据实际测试反馈，原指南中的 VM 配置过于激进（4GB 内存 + 动态内存），导致 VM 启动黑屏。本修订版提供更保守、更稳妥的配置方案。
 
 ## 前提
 
 StepClaw（阶跃AI桌面伙伴）默认只能同时运行一个实例。要实现"多账号轮流提供服务"，核心思路是：**让每个账号在独立环境中运行，然后把它们的本地代理端口映射到宿主机不同端口**。
 
-## 推荐方案：Hyper-V 虚拟机（Windows 10/11 Pro 自带）
+## 你的硬件是否够格？
+
+**最低要求**（能跑 1 个 VM）：
+- CPU：4 核以上
+- 内存：**16 GB**（宿主机 8GB + VM 4GB + 余量）
+- 磁盘：SSD，每个 VM 至少 20GB 可用空间
+
+**推荐配置**（能跑 2-3 个 VM）：
+- CPU：8 核以上（你的 i9-12900 完全够用）
+- 内存：**32 GB 以上**（你有 64GB，很好）
+- 磁盘：SSD，每个 VM 40GB 空间
+
+**如果你的内存 < 16GB，不要尝试 Hyper-V VM 方案**，改用下面的"轻量替代方案"。
+
+---
+
+## 方案一：Hyper-V 虚拟机（推荐，资源充足时）
 
 ### 为什么选 Hyper-V
 - Windows 10/11 Pro 自带，无需额外安装
@@ -22,21 +40,23 @@ Enable-WindowsOptionalFeature -Online -FeatureName Microsoft-Hyper-V -All
 
 重启电脑。
 
-### 步骤 2：创建虚拟机
-
-每台 VM 对应一个 StepClaw 账号。
+### 步骤 2：创建虚拟交换机（只需执行一次）
 
 ```powershell
-# 创建虚拟交换机（只需执行一次）
+# 创建内部虚拟交换机
 New-VMSwitch -Name "StepClaw-Net" -SwitchType Internal
 
 # 获取交换机接口索引
 $ifIndex = (Get-NetAdapter -Name "vEthernet (StepClaw-Net)").ifIndex
+
+# 配置 NAT 网关
 New-NetIPAddress -IPAddress 192.168.100.1 -PrefixLength 24 -InterfaceIndex $ifIndex
 New-NetNat -Name "StepClaw-NAT" -InternalIPInterfaceAddressPrefix 192.168.100.0/24
 ```
 
-创建 VM（示例：VM-A）：
+### 步骤 3：创建虚拟机（保守配置）
+
+**关键教训**：不要给 VM 分配太多资源，也不要开动态内存。StepClaw 是个轻量桌面应用，2GB 内存足够。
 
 ```powershell
 $vmName = "StepClaw-VM-A"
@@ -45,75 +65,110 @@ $vmPath = "D:\VMs\$vmName"
 # 创建目录
 New-Item -ItemType Directory -Path $vmPath -Force
 
-# 创建 VM（2核4GB内存，可根据需要调整）
-New-VM -Name $vmName -MemoryStartupBytes 4GB -Generation 2 -Path $vmPath
+# 创建 VM（保守配置：2核 + 2GB 静态内存）
+New-VM -Name $vmName -MemoryStartupBytes 2GB -Generation 2 -Path $vmPath
+
+# 关闭动态内存！这是导致黑屏的元凶之一
+Set-VMMemory $vmName -DynamicMemoryEnabled $false
+
+# 设置处理器（2核足够）
 Set-VMProcessor $vmName -Count 2
 
 # 连接网络
 Connect-VMNetworkAdapter -VMName $vmName -SwitchName "StepClaw-Net"
 
-# 创建虚拟硬盘（40GB）
-New-VHD -Path "$vmPath\disk.vhdx" -SizeBytes 40GB -Dynamic
+# 创建虚拟硬盘（20GB 动态扩展，实际占用取决于使用量）
+New-VHD -Path "$vmPath\disk.vhdx" -SizeBytes 20GB -Dynamic
 Add-VMHardDiskDrive -VMName $vmName -Path "$vmPath\disk.vhdx"
 
 # 禁用安全启动（如果用 Windows ISO 安装）
 Set-VMFirmware $vmName -EnableSecureBoot Off
+
+# 设置自动检查点（可选，会占空间）
+Set-VM -Name $vmName -AutomaticCheckpointsEnabled $false
 ```
 
-### 步骤 3：安装 Windows 并配置
+**配置说明**：
+- **内存 2GB**：StepClaw 是 Electron 应用，2GB 足够运行。不要设 4GB，宿主机会吃紧。
+- **静态内存**：关闭 Dynamic Memory，避免内存波动导致卡顿。
+- **20GB 磁盘**：Windows 精简安装后约 10GB，留 10GB 给应用和数据。
+- **关闭自动检查点**：检查点会占用大量磁盘空间，手动管理更好。
 
-1. 挂载 Windows ISO 启动安装
-2. 安装完成后，在 VM 内：
-   - 下载安装 StepClaw / StepFun Desktop
-   - 登录对应的 StepClaw 账号
-   - 确认可以正常对话（有额度）
-   - 确认本地 API 可用：
-     ```powershell
-     # 在 VM 内测试
-     Invoke-RestMethod -Uri "http://127.0.0.1:3199/v1/chat/completions" `
-       -Method Post `
-       -ContentType "application/json" `
-       -Body '{"model":"step-alpha","messages":[{"role":"user","content":"ping"}]}' `
-       -Headers @{ "Authorization" = "Bearer stepfun-model-proxy" }
-     ```
+### 步骤 4：安装 Windows（精简版推荐）
 
-### 步骤 4：配置端口映射（关键步骤）
+**推荐用 Windows 10/11 IoT Enterprise LTSC**：
+- 没有多余预装软件，更省资源
+- 系统占用约 6-8GB（普通版约 15-20GB）
+- 可以从 [Microsoft 官网](https://www.microsoft.com/en-us/evalcenter/evaluate-windows-10-enterprise) 下载评估版
 
-假设 VM-A 的内网 IP 是 `192.168.100.10`，VM-B 是 `192.168.100.11`...
+**安装步骤**：
+1. 下载 Windows ISO
+2. 挂载 ISO 到 VM：
+   ```powershell
+   Set-VMDvdDrive -VMName $vmName -Path "D:\ISOs\Windows10_LTSC.iso"
+   ```
+3. 启动 VM：
+   ```powershell
+   Start-VM -Name $vmName
+   ```
+4. 用 Hyper-V 管理器连接 VM 完成安装
 
-在**宿主机**上添加端口映射：
+**安装优化**（安装完成后在 VM 内执行）：
+```powershell
+# 在 VM 内运行，关闭不必要的视觉效果
+Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects" -Name "VisualFXSetting" -Value 2
+
+# 禁用 Windows Update（可选，减少后台活动）
+Stop-Service wuauserv
+Set-Service wuauserv -StartupType Disabled
+```
+
+### 步骤 5：安装 StepClaw
+
+在 VM 内：
+1. 下载 StepFun Desktop 安装包
+2. 安装并登录对应账号
+3. 确认可以正常对话（有额度）
+4. 验证本地 API：
+   ```powershell
+   # 在 VM 内测试
+   Invoke-RestMethod -Uri "http://127.0.0.1:3199/v1/chat/completions" `
+     -Method Post -ContentType "application/json" `
+     -Body '{"model":"step-alpha","messages":[{"role":"user","content":"ping"}]}' `
+     -Headers @{ "Authorization" = "Bearer stepfun-model-proxy" }
+   ```
+
+### 步骤 6：配置静态 IP（VM 内）
+
+为了让端口映射稳定，给 VM 配置静态 IP：
 
 ```powershell
-# VM-A 的 StepClaw 映射到宿主机的 3199
+# 在 VM 内运行
+$adapter = Get-NetAdapter | Where-Object {$_.Status -eq "Up"}
+New-NetIPAddress -InterfaceIndex $adapter.ifIndex -IPAddress 192.168.100.10 -PrefixLength 24 -DefaultGateway 192.168.100.1
+Set-DnsClientServerAddress -InterfaceIndex $adapter.ifIndex -ServerAddresses 8.8.8.8
+```
+
+### 步骤 7：宿主机端口映射
+
+```powershell
+# VM-A 的 StepClaw (192.168.100.10:3199) 映射到宿主 127.0.0.1:3199
 netsh interface portproxy add v4tov4 `
   listenaddress=127.0.0.1 listenport=3199 `
   connectaddress=192.168.100.10 connectport=3199
 
-# VM-B 的 StepClaw 映射到宿主机的 3200
+# VM-B 映射到宿主 3200（创建 VM-B 后执行）
 netsh interface portproxy add v4tov4 `
   listenaddress=127.0.0.1 listenport=3200 `
   connectaddress=192.168.100.11 connectport=3199
-
-# VM-C 的 StepClaw 映射到宿主机的 3201
-netsh interface portproxy add v4tov4 `
-  listenaddress=127.0.0.1 listenport=3201 `
-  connectaddress=192.168.100.12 connectport=3199
 ```
 
 验证映射：
-
 ```powershell
 netsh interface portproxy show all
 ```
 
-### 步骤 5：配置代理的 upstreams.json
-
-在宿主机上，进入项目目录，创建配置文件：
-
-```powershell
-cd C:\Users\test\Desktop\stepclaw_opencode
-mkdir -Force config
-```
+### 步骤 8：配置代理的 upstreams.json
 
 创建 `config\upstreams.json`：
 
@@ -129,12 +184,6 @@ mkdir -Force config
     {
       "name": "vm-b",
       "baseUrl": "http://127.0.0.1:3200/v1",
-      "apiKey": "stepfun-model-proxy",
-      "weight": 1
-    },
-    {
-      "name": "vm-c",
-      "baseUrl": "http://127.0.0.1:3201/v1",
       "apiKey": "stepfun-model-proxy",
       "weight": 1
     }
@@ -161,131 +210,149 @@ mkdir -Force config
 }
 ```
 
-### 步骤 6：启动代理并验证
-
-```powershell
-npm run build
-npm start
-```
-
-你应该看到：
-
-```
-Loaded 3 upstream(s)
-  - vm-a: http://127.0.0.1:3199/v1 (weight=1)
-  - vm-b: http://127.0.0.1:3200/v1 (weight=1)
-  - vm-c: http://127.0.0.1:3201/v1 (weight=1)
-```
-
-### 步骤 7：验证多账号切换
-
-**测试粘性绑定**（同一个 apiKey 应该始终落在同一个 upstream）：
-
-```powershell
-# 第一次请求
-Invoke-RestMethod -Uri "http://127.0.0.1:8080/v1/chat/completions" `
-  -Method Post -ContentType "application/json" `
-  -Body '{"model":"step-3.5-flash","messages":[{"role":"user","content":"test1"}]}' `
-  -Headers @{ "Authorization" = "Bearer session-key-1" }
-
-# 第二次请求（应该还是同一个 upstream）
-Invoke-RestMethod -Uri "http://127.0.0.1:8080/v1/chat/completions" `
-  -Method Post -ContentType "application/json" `
-  -Body '{"model":"step-3.5-flash","messages":[{"role":"user","content":"test2"}]}' `
-  -Headers @{ "Authorization" = "Bearer session-key-1" }
-```
-
-查看日志，确认两次请求的 upstream 相同。
-
-**测试不同 session 分配到不同 upstream**：
-
-```powershell
-Invoke-RestMethod -Uri "http://127.0.0.1:8080/v1/chat/completions" `
-  -Method Post -ContentType "application/json" `
-  -Body '{"model":"step-3.5-flash","messages":[{"role":"user","content":"test"}]}' `
-  -Headers @{ "Authorization" = "Bearer session-key-2" }
-```
-
-查看日志，确认这次请求的 upstream 与第一次不同。
-
-**测试失败迁移**：
-
-```powershell
-# 停止 VM-B
-Stop-VM -Name "StepClaw-VM-B"
-
-# 对绑定到 vm-b 的 session 再次请求
-# 应该自动迁移到其他可用 upstream
-```
-
-### 步骤 8：查看管理面板
-
-```powershell
-# 查看 upstream 健康状态
-Invoke-RestMethod -Uri "http://127.0.0.1:8080/_admin/upstreams"
-
-# 查看 session 绑定情况
-Invoke-RestMethod -Uri "http://127.0.0.1:8080/_admin/sessions"
-
-# 手动禁用某个 upstream
-Invoke-RestMethod -Uri "http://127.0.0.1:8080/_admin/upstreams/vm-b/disable" -Method Post
-```
-
 ---
 
-## 备选方案：Windows Sandbox（轻量但重启丢失）
+## 方案二：Windows Sandbox（轻量，临时用）
 
-如果你不想用 Hyper-V，Windows 10/11 Pro 还有 **Windows Sandbox** 功能：
+如果你不想折腾 VM，或者内存不够，可以用 Windows Sandbox：
 
 ```powershell
 # 启用 Windows Sandbox
 Enable-WindowsOptionalFeature -Online -FeatureName "Containers-DisposableClientVM" -All
 ```
 
-但 Sandbox 每次关闭都会重置，**不适合长期运行**，只适合做临时测试。
+**缺点**：
+- 每次关闭后重置，需要重新登录 StepClaw
+- 不适合长期运行
+
+**适用场景**：临时测试、快速验证
 
 ---
 
-## 备选方案：Windows Docker（不推荐）
+## 方案三：同机多用户（不推荐但可行）
 
-理论上可以用 Windows Container 跑 StepClaw，但：
-- StepClaw 是桌面应用，需要 GUI
-- Windows Container 对 GUI 应用支持差
-- 配置复杂，不推荐
+在宿主机上创建多个 Windows 用户，每个用户运行一个 StepClaw：
+
+```powershell
+# 创建新用户
+New-LocalUser -Name "StepClawUser1" -Password (ConvertTo-SecureString "YourPassword" -AsPlainText -Force)
+Add-LocalGroupMember -Group "Users" -Member "StepClawUser1"
+```
+
+**问题**：
+- StepClaw 可能有全局单实例锁
+- 需要切换用户会话，操作麻烦
+- 端口冲突风险
+
+**不推荐**，除非 VM 方案实在跑不起来。
 
 ---
 
-## 常见问题
+## 常见问题排查
 
-### Q1: 为什么不用同一系统多用户？
-StepClaw 可能会检测全局端口占用或单实例锁，即使不同 Windows 用户也可能冲突。VM 是最稳妥的。
+### Q1: VM 黑屏/启动失败
 
-### Q2: 一台电脑能跑几个 VM？
-取决于你的硬件：
-- 每个 VM 建议 2核 + 4GB 内存
-- 如果有 16GB 内存，可以同时跑 2-3 个 VM
-- 固态硬盘必备（机械硬盘 VM 会卡死）
+**原因**：
+- 内存分配太多，宿主机内存不足
+- 动态内存导致波动
+- 虚拟硬盘空间不足
 
-### Q3: VM 的 StepClaw 需要保持前台运行吗？
-不需要。VM 内的 StepClaw 启动后，可以最小化，只要后台进程在跑就行。
+**解决**：
+- 内存降到 2GB，关闭动态内存
+- 确保磁盘有 20GB 可用空间
+- 检查 Hyper-V 服务是否运行：
+  ```powershell
+  Get-Service vmms, vmcompute
+  ```
 
-### Q4: 端口映射重启后还在吗？
-`netsh interface portproxy` 的配置是持久的，重启后仍然有效。
+### Q2: VM 启动后很卡
 
-### Q5: 如何添加更多账号？
-重复步骤 2-5，创建新的 VM，映射新端口，在 `upstreams.json` 添加新条目即可。
+**原因**：
+- 磁盘 I/O 瓶颈（机械硬盘）
+- 内存不足导致频繁换页
+
+**解决**：
+- 必须使用 SSD
+- 关闭 VM 内的视觉效果
+- 禁用 Windows Update
+
+### Q3: 端口映射不生效
+
+**检查**：
+```powershell
+# 查看端口代理
+netsh interface portproxy show all
+
+# 检查防火墙
+Get-NetFirewallRule -DisplayName "*StepClaw*" 
+
+# 测试连通性
+test-netconnection 192.168.100.10 -Port 3199
+```
+
+### Q4: StepClaw 在 VM 内无法联网
+
+**检查 NAT 配置**：
+```powershell
+Get-NetNat | Select-Object Name, InternalIPInterfaceAddressPrefix
+Get-NetIPAddress -InterfaceAlias "vEthernet (StepClaw-Net)"
+```
+
+### Q5: 代理提示 "No available upstreams"
+
+**检查**：
+1. VM 是否运行：`Get-VM`
+2. StepClaw 是否在 VM 内运行
+3. 端口映射是否正确
+4. 防火墙是否放行
+
+---
+
+## 资源监控命令
+
+```powershell
+# 查看所有 VM 资源占用
+Get-VM | Select-Object Name, State, @{Name='MemoryMB';Expression={[math]::Round($_.MemoryAssigned/1MB,0)}}, CPUUsage, Uptime | Format-Table -AutoSize
+
+# 查看宿主机资源
+Get-Counter '\Processor(_Total)\% Processor Time'
+Get-Counter '\Memory\Available MBytes'
+Get-Counter '\PhysicalDisk(_Total)\% Disk Time'
+
+# 查看端口占用
+Get-NetTCPConnection -LocalPort 3199,3200,3201 | Select-Object LocalPort, OwningProcess, State
+```
 
 ---
 
 ## 快速检查清单
 
-- [ ] Hyper-V 已启用
-- [ ] 每个 VM 已创建并安装 Windows
-- [ ] 每个 VM 内已安装 StepClaw 并登录对应账号
-- [ ] 每个 VM 内的 StepClaw 本地 API 已验证可用
-- [ ] 宿主机端口映射已配置（3199/3200/3201...）
-- [ ] `config/upstreams.json` 已配置
-- [ ] 代理已启动并识别所有 upstream
-- [ ] 粘性绑定已验证
-- [ ] 失败迁移已验证
-- [ ] 管理接口可正常访问
+创建 VM 前：
+- [ ] 确认内存 >= 16GB
+- [ ] 确认磁盘是 SSD
+- [ ] 确认 Hyper-V 已启用
+
+创建 VM 时：
+- [ ] 内存设 2GB（不要多）
+- [ ] 关闭动态内存
+- [ ] 磁盘设 20GB
+- [ ] 关闭自动检查点
+
+创建 VM 后：
+- [ ] 安装 Windows LTSC（精简版）
+- [ ] 安装 StepClaw 并登录
+- [ ] 配置静态 IP
+- [ ] 配置端口映射
+- [ ] 验证代理多 upstream 模式
+
+---
+
+## 硬件要求总结
+
+| 配置 | 可运行 VM 数 | 备注 |
+|------|-------------|------|
+| 16GB RAM | 1 个 | 宿主机 8GB + VM 2GB + 余量 |
+| 32GB RAM | 2 个 | 宿主机 16GB + 2x VM 2GB |
+| 64GB RAM | 3-4 个 | 你的配置，很充裕 |
+
+**你的配置（i9-12900 + 64GB RAM）**：可以轻松跑 3 个 VM，每个 2GB 内存。

@@ -38,7 +38,24 @@ npm start
 
 启动后会自动检测阶跃AI桌面端是否在运行。
 
-### 3. 配置 OpenCode
+### 3. 设置开机自启动（可选）
+
+如果你希望代理在登录时自动启动，运行以下命令：
+
+```powershell
+# 创建启动目录快捷方式（只需执行一次）
+$WshShell = New-Object -ComObject WScript.Shell
+$StartupPath = [Environment]::GetFolderPath('Startup')
+$Shortcut = $WshShell.CreateShortcut("$StartupPath\StepClaw-OpenCode-Proxy.lnk")
+$Shortcut.TargetPath = "C:\Users\test\Desktop\stepclaw_opencode\scripts\start-proxy.bat"
+$Shortcut.WorkingDirectory = "C:\Users\test\Desktop\stepclaw_opencode"
+$Shortcut.Description = "StepClaw OpenCode Proxy"
+$Shortcut.Save()
+```
+
+或者手动运行 `scripts/setup-autostart.ps1`（需要管理员权限，会创建计划任务）。
+
+### 4. 配置 OpenCode
 
 编辑 `~/.config/opencode/opencode.json`：
 

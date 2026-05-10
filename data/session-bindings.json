@@ -1,0 +1,9 @@
+{
+  "bindings": {
+    "default-session": {
+      "upstreamName": "default",
+      "createdAt": 1778407761914,
+      "updatedAt": 1778407761914
+    }
+  }
+}
